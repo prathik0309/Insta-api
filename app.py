@@ -1,39 +1,64 @@
-# app.py - WORKING INSTAGRAM API WITH MULTIPLE FALLBACKS
+# app.py - YT-DLP INSTAGRAM API
 import os
-import re
 import json
 import uuid
 import time
-import requests
+import subprocess
+import tempfile
+import re
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from urllib.parse import quote, unquote
+import urllib.parse
 
 app = Flask(__name__)
 CORS(app)
 
 # Configuration
 PORT = int(os.environ.get("PORT", 10000))
-CACHE_DURATION = 1800  # 30 minutes
+CACHE_DURATION = 3600  # 1 hour cache
 
 # Store videos
 video_cache = {}
 
-class WorkingInstagramAPI:
-    """Instagram API with multiple working methods"""
+class YTDLPInstagramScraper:
+    """Instagram scraper using yt-dlp (Professional tool)"""
     
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-        })
+        # Check if yt-dlp is available
+        self.check_ytdlp()
+    
+    def check_ytdlp(self):
+        """Check if yt-dlp is installed"""
+        try:
+            result = subprocess.run(
+                ['yt-dlp', '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            print(f"✅ yt-dlp version: {result.stdout.strip()}")
+            return True
+        except:
+            print("⚠️ yt-dlp not found, installing...")
+            self.install_ytdlp()
+            return True
+    
+    def install_ytdlp(self):
+        """Install yt-dlp"""
+        try:
+            subprocess.run(['pip', 'install', 'yt-dlp'], check=True)
+            print("✅ yt-dlp installed successfully")
+        except Exception as e:
+            print(f"❌ Failed to install yt-dlp: {e}")
+            # Try alternative installation
+            try:
+                subprocess.run(['python3', '-m', 'pip', 'install', 'yt-dlp'], check=True)
+                print("✅ yt-dlp installed via python3")
+            except:
+                print("❌ Could not install yt-dlp")
     
     def extract_shortcode(self, url):
-        """Extract shortcode from URL"""
+        """Extract Instagram shortcode"""
         patterns = [
             r'instagram\.com/(?:reel|p|tv)/([A-Za-z0-9_-]{11})',
             r'instagram\.com/(?:reels?)/([A-Za-z0-9_-]+)',
@@ -43,276 +68,200 @@ class WorkingInstagramAPI:
         for pattern in patterns:
             match = re.search(pattern, url)
             if match:
-                shortcode = match.group(1)
-                if len(shortcode) >= 10:
-                    return shortcode
+                return match.group(1)
         return None
     
-    def method_instagramez(self, shortcode):
-        """METHOD 1: Use instagramez.com proxy (WORKING)"""
+    def extract_with_ytdlp(self, url):
+        """Extract video using yt-dlp"""
         try:
-            # Instagramez is a working Instagram proxy
-            proxy_url = f"https://www.instagramez.com/p/{shortcode}/"
+            print(f"🔍 yt-dlp processing: {url}")
             
-            response = self.session.get(proxy_url, timeout=15, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.instagramez.com/',
-            })
+            # Create temporary file for output
+            with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as tmp:
+                output_file = tmp.name
             
-            if response.status_code == 200:
-                html = response.text
+            try:
+                # Run yt-dlp to get video info
+                cmd = [
+                    'yt-dlp',
+                    '--no-warnings',
+                    '--quiet',
+                    '--skip-download',
+                    '--dump-json',
+                    '--no-playlist',
+                    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    '--referer', 'https://www.instagram.com/',
+                    url
+                ]
                 
-                # Pattern 1: Look for video in meta tags
-                meta_pattern = r'<meta property="og:video" content="([^"]+)"'
-                meta_match = re.search(meta_pattern, html)
+                print(f"Running command: {' '.join(cmd)}")
                 
-                if meta_match:
-                    video_url = meta_match.group(1).replace('\\u0026', '&')
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30  # 30 second timeout
+                )
+                
+                if result.returncode == 0:
+                    # Parse yt-dlp output
+                    data = json.loads(result.stdout)
+                    
+                    # Extract video URL (yt-dlp gives multiple formats)
+                    video_url = None
+                    thumbnail = None
+                    title = "Instagram Reel"
+                    duration = 0
+                    
+                    # Get the best video format
+                    if 'url' in data:
+                        video_url = data['url']
+                    elif 'formats' in data and data['formats']:
+                        # Get the best quality video
+                        formats = data['formats']
+                        # Filter for video formats
+                        video_formats = [f for f in formats if f.get('vcodec') != 'none']
+                        if video_formats:
+                            # Get the highest quality
+                            best_format = max(video_formats, key=lambda x: x.get('height', 0))
+                            video_url = best_format.get('url')
+                    
+                    # Get thumbnail
+                    thumbnail = data.get('thumbnail') or data.get('thumbnails', [{}])[0].get('url', '')
+                    
+                    # Get title
+                    title = data.get('title') or data.get('description', 'Instagram Reel')
+                    
+                    # Get duration
+                    duration = data.get('duration') or 0
+                    
+                    if video_url:
+                        print(f"✅ yt-dlp success! Got video URL")
+                        return {
+                            "success": True,
+                            "video_url": video_url,
+                            "thumbnail": thumbnail,
+                            "title": title[:100],
+                            "duration": duration,
+                            "method": "yt-dlp"
+                        }
+                    else:
+                        print("❌ yt-dlp found data but no video URL")
+                        return {"success": False, "error": "No video URL found"}
+                
+                else:
+                    error_msg = result.stderr or "Unknown yt-dlp error"
+                    print(f"❌ yt-dlp error: {error_msg}")
+                    
+                    # Try alternative yt-dlp command
+                    return self.try_alternative_ytdlp(url)
+                    
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(output_file)
+                except:
+                    pass
+                
+        except subprocess.TimeoutExpired:
+            print("❌ yt-dlp timeout")
+            return {"success": False, "error": "Timeout extracting video"}
+        except json.JSONDecodeError:
+            print("❌ Invalid JSON from yt-dlp")
+            return {"success": False, "error": "Invalid response from downloader"}
+        except Exception as e:
+            print(f"❌ yt-dlp exception: {e}")
+            return {"success": False, "error": f"Extraction error: {str(e)}"}
+    
+    def try_alternative_ytdlp(self, url):
+        """Try alternative yt-dlp command"""
+        try:
+            print("🔄 Trying alternative yt-dlp command...")
+            
+            # Alternative: Use --get-url to just get the direct URL
+            cmd = [
+                'yt-dlp',
+                '--no-warnings',
+                '--quiet',
+                '-g',  # Get URL only
+                '--no-playlist',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                url
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=20
+            )
+            
+            if result.returncode == 0:
+                video_url = result.stdout.strip()
+                if video_url and video_url.startswith('http'):
+                    # Split by newlines (yt-dlp might return multiple URLs)
+                    urls = video_url.split('\n')
+                    video_url = urls[0]  # First URL is usually the video
+                    
+                    print(f"✅ Alternative yt-dlp success!")
                     return {
                         "success": True,
                         "video_url": video_url,
-                        "method": "instagramez_meta",
-                        "quality": "720p"
-                    }
-                
-                # Pattern 2: Look for video in JSON-LD
-                jsonld_pattern = r'<script type="application/ld\+json">(.*?)</script>'
-                jsonld_match = re.search(jsonld_pattern, html, re.DOTALL)
-                
-                if jsonld_match:
-                    try:
-                        data = json.loads(jsonld_match.group(1))
-                        if 'video' in data:
-                            video_url = data['video'].get('contentUrl', '')
-                            if video_url:
-                                return {
-                                    "success": True,
-                                    "video_url": video_url,
-                                    "method": "instagramez_jsonld",
-                                    "quality": "720p"
-                                }
-                    except:
-                        pass
-                
-                # Pattern 3: Look for video sources
-                video_patterns = [
-                    r'<video[^>]+src="([^"]+)"',
-                    r'<source[^>]+src="([^"]+)"[^>]+type="video/mp4"',
-                    r'src="(https://[^"]+\.mp4)"',
-                    r'video_url":"([^"]+)"'
-                ]
-                
-                for pattern in video_patterns:
-                    matches = re.findall(pattern, html)
-                    for match in matches:
-                        if '.mp4' in str(match):
-                            video_url = str(match).replace('\\u0026', '&')
-                            return {
-                                "success": True,
-                                "video_url": video_url,
-                                "method": "instagramez_direct",
-                                "quality": "480p"
-                            }
-            
-            return None
-            
-        except Exception as e:
-            print(f"Instagramez method error: {e}")
-            return None
-    
-    def method_savefrom_api(self, url):
-        """METHOD 2: Use SaveFrom.net API"""
-        try:
-            # SaveFrom.net is a reliable service
-            api_url = "https://api.savefrom.net/api/convert"
-            
-            params = {
-                'url': url,
-                'format': 'mp4'
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json, text/plain, */*',
-                'Origin': 'https://savefrom.net',
-                'Referer': 'https://savefrom.net/',
-            }
-            
-            response = self.session.get(api_url, params=params, headers=headers, timeout=20)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # SaveFrom returns data in different formats
-                video_url = None
-                
-                if 'url' in data:
-                    video_url = data['url']
-                elif 'data' in data and isinstance(data['data'], list) and len(data['data']) > 0:
-                    video_url = data['data'][0].get('url')
-                
-                if video_url:
-                    return {
-                        "success": True,
-                        "video_url": video_url,
-                        "method": "savefrom_api",
-                        "quality": "1080p"
+                        "thumbnail": '',
+                        "title": "Instagram Reel",
+                        "duration": 0,
+                        "method": "yt-dlp-alternative"
                     }
             
-            return None
+            return {"success": False, "error": "All yt-dlp methods failed"}
             
         except Exception as e:
-            print(f"SaveFrom API error: {e}")
-            return None
+            print(f"❌ Alternative yt-dlp error: {e}")
+            return {"success": False, "error": f"Alternative method error: {str(e)}"}
     
-    def method_snapinsta_api(self, url):
-        """METHOD 3: Use SnapInsta API"""
+    def get_thumbnail(self, shortcode):
+        """Get thumbnail URL"""
         try:
-            # SnapInsta is another working service
-            api_url = "https://snapinsta.to/api/ajaxSearch"
-            
-            data = {
-                'q': url,
-                'lang': 'en',
-                'token': ''
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'Origin': 'https://snapinsta.to',
-                'Referer': 'https://snapinsta.to/',
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-            
-            response = self.session.post(api_url, data=data, headers=headers, timeout=20)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                if data.get('status') == 'ok' and 'url' in data:
-                    return {
-                        "success": True,
-                        "video_url": data['url'],
-                        "method": "snapinsta_api",
-                        "quality": "720p"
-                    }
-            
-            return None
-            
-        except Exception as e:
-            print(f"SnapInsta API error: {e}")
-            return None
-    
-    def method_direct_html(self, url):
-        """METHOD 4: Direct HTML scraping with multiple patterns"""
-        try:
-            response = self.session.get(url, timeout=15, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            })
-            
-            if response.status_code == 200:
-                html = response.text
-                
-                # Try multiple extraction patterns
-                patterns = [
-                    r'"video_url":"([^"]+)"',
-                    r'content="([^"]+\.mp4[^"]*)"',
-                    r'<meta property="og:video" content="([^"]+)"',
-                    r'src="([^"]+\.mp4[^"]*)"',
-                    r'video src="([^"]+)"'
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, html)
-                    for match in matches:
-                        if '.mp4' in str(match) and 'instagram.com' in str(match):
-                            video_url = str(match).replace('\\u0026', '&').replace('\\/', '/')
-                            return {
-                                "success": True,
-                                "video_url": video_url,
-                                "method": "direct_html",
-                                "quality": "1080p"
-                            }
-            
-            return None
-            
-        except Exception as e:
-            print(f"Direct HTML error: {e}")
-            return None
+            return f"https://instagram.fdel25-1.fna.fbcdn.net/v/t51.2885-15/{shortcode}_n.jpg"
+        except:
+            return ""
     
     def extract_video(self, url):
-        """Main extraction function with 4 working methods"""
+        """Main extraction function"""
         print(f"\n🔍 Processing: {url}")
         
         # Extract shortcode
         shortcode = self.extract_shortcode(url)
         if not shortcode:
-            return {"success": False, "error": "Invalid Instagram URL format"}
+            return {"success": False, "error": "Invalid Instagram URL"}
         
         print(f"📝 Shortcode: {shortcode}")
         
-        # List of methods to try
-        methods = [
-            ("1. Instagramez Proxy", lambda: self.method_instagramez(shortcode)),
-            ("2. SaveFrom API", lambda: self.method_savefrom_api(url)),
-            ("3. SnapInsta API", lambda: self.method_snapinsta_api(url)),
-            ("4. Direct HTML", lambda: self.method_direct_html(url)),
-        ]
+        # Use yt-dlp (primary method)
+        result = self.extract_with_ytdlp(url)
         
-        # Try each method
-        for method_name, method_func in methods:
-            print(f"  Trying {method_name}...")
+        if result['success']:
+            # Ensure we have a thumbnail
+            if not result.get('thumbnail'):
+                result['thumbnail'] = self.get_thumbnail(shortcode)
             
-            try:
-                result = method_func()
-                
-                if result and result.get("success"):
-                    print(f"  ✅ Success with {method_name}")
-                    
-                    # Get thumbnail
-                    thumbnail = f"https://instagram.fdel25-1.fna.fbcdn.net/v/t51.2885-15/{shortcode}_n.jpg"
-                    
-                    return {
-                        "success": True,
-                        "video_url": result["video_url"],
-                        "thumbnail": thumbnail,
-                        "title": f"Instagram Reel • {result['method']}",
-                        "quality": result.get("quality", "HD"),
-                        "method": result["method"]
-                    }
-                    
-            except Exception as e:
-                print(f"  ⚠️ {method_name} failed: {str(e)[:50]}...")
-                continue
-            
-            # Small delay between methods
-            time.sleep(0.5)
+            return result
         
-        print("  ❌ All methods failed")
-        return {
-            "success": False,
-            "error": "Could not extract video. Try another reel or service may be temporarily unavailable.",
-            "tip": "The reel might be private or Instagram has updated their structure"
-        }
+        return result
 
-# Initialize API
-instagram_api = WorkingInstagramAPI()
+# Initialize scraper
+scraper = YTDLPInstagramScraper()
 
 # ==================== FLASK ROUTES ====================
 @app.route('/')
 def home():
     return jsonify({
         "status": "online",
-        "service": "Instagram Video API",
-        "version": "9.0",
-        "methods": "4 working methods with fallback",
+        "service": "Instagram Video API with yt-dlp",
+        "version": "10.0",
+        "method": "yt-dlp (Professional tool)",
         "endpoints": {
-            "/api/video?url=URL": "Get video with 4 methods",
+            "/api/video?url=URL": "Get video using yt-dlp",
             "/api/player/VIDEO_ID": "Get cached video",
             "/api/health": "Health check",
             "/api/test": "Test endpoint"
@@ -325,21 +274,26 @@ def health():
     return jsonify({
         "status": "healthy",
         "timestamp": int(time.time()),
-        "cache_size": len(video_cache)
+        "cache_size": len(video_cache),
+        "ytdlp": "available"
     })
 
 @app.route('/api/test')
 def test():
-    """Test all methods"""
+    """Test the API"""
     test_url = "https://www.instagram.com/reel/Cz7KmCJA8Nx/"
     
-    print("\n🧪 Running API Test...")
-    result = instagram_api.extract_video(test_url)
+    print("\n🧪 Running yt-dlp test...")
+    result = scraper.extract_video(test_url)
     
     return jsonify({
         "test": True,
         "url": test_url,
-        "result": result
+        "result": {
+            "success": result["success"],
+            "method": result.get("method", "none"),
+            "error": result.get("error", "")
+        }
     })
 
 @app.route('/api/video')
@@ -360,8 +314,8 @@ def get_video():
         if time.time() - cached['timestamp'] < CACHE_DURATION:
             return jsonify(cached['data'])
     
-    # Extract video
-    result = instagram_api.extract_video(url)
+    # Extract video using yt-dlp
+    result = scraper.extract_video(url)
     
     if result['success']:
         # Generate video ID
@@ -403,8 +357,8 @@ def get_video():
             "qualities": qualities,
             "title": result.get('title', 'Instagram Reel'),
             "thumbnail": result.get('thumbnail', ''),
-            "quality": result.get('quality', 'HD'),
-            "method": result.get('method', 'multiple')
+            "duration": result.get('duration', 0),
+            "method": result.get('method', 'yt-dlp')
         }
         
         # Cache the result
@@ -440,20 +394,15 @@ def get_player_data(video_id):
 # ==================== START SERVER ====================
 if __name__ == '__main__':
     print("\n" + "=" * 60)
-    print("🚀 WORKING INSTAGRAM API SERVER")
+    print("🚀 YT-DLP INSTAGRAM API")
     print("=" * 60)
-    print("Version: 9.0 • Updated with working methods")
+    print("Professional Instagram video extraction")
     print(f"Port: {PORT}")
-    print("Methods: 4 working extraction techniques")
-    print("1. Instagramez.com Proxy")
-    print("2. SaveFrom.net API")
-    print("3. SnapInsta.to API")
-    print("4. Direct HTML Scraping")
+    print("Method: yt-dlp (most reliable)")
     print("=" * 60)
     print("Endpoints:")
     print("  GET /api/video?url=INSTAGRAM_URL")
     print("  GET /api/player/VIDEO_ID")
-    print("  GET /api/test")
     print("=" * 60)
     
     app.run(host='0.0.0.0', port=PORT, debug=False)
